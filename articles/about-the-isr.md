@@ -4,6 +4,7 @@ emoji: "😽"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["ISR", "SSR", "Nextjs", "React"]
 published: false
+publication_name: "nextbeat"
 ---
 
 ## はじめに
