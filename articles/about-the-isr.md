@@ -3,7 +3,7 @@ title: "ISR (Incremental Static Regeneration) とは？ そのメリットとリ
 emoji: "😽"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["ISR", "SSR", "Nextjs", "React"]
-published: false
+published: true
 publication_name: "nextbeat"
 ---
 
