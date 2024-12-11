@@ -11,8 +11,7 @@ publication_name: "nextbeat"
 
 ウェブ開発において様々なブラウザやバージョンを考慮することは重要です。
 しかし、すべてのブラウザに対応するコードを書くのは手間がかかります。
-この記事では、ブラウザ互換性を効率的に管理するためのツール「[Browserslist](https://github.com/browserslist/browserslist)
-」について紹介します。
+この記事では、ブラウザ互換性を効率的に管理するためのツール「[Browserslist](https://github.com/browserslist/browserslist)」について紹介します。
 
 ## [Browserslist](https://github.com/browserslist/browserslist)とは？
 
