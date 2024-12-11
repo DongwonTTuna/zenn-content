@@ -4,6 +4,7 @@ emoji: "😽"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: [ "Browserslist", "フロントエンド", "ブラウザ互換性" ]
 published: false
+publication_name: "nextbeat"
 ---
 
 ## はじめに
