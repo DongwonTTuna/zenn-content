@@ -62,7 +62,8 @@ not dead
 }
 ```
 
-このメソッドは安全性を重視しており、`browserslist-config-`接頭辞を含むパッケージのみ参照可能です。npmスコープのパッケージも、`@scope/browserslist-config`のように命名することで参照できます。
+このメソッドは安全性を重視しており、`browserslist-config-`接頭辞を含むパッケージのみ参照可能です。
+npmスコープのパッケージも、`@scope/browserslist-config`のように命名することで参照できます。
 
 例:
 
@@ -75,7 +76,7 @@ not dead
 }
 ```
 
-共有可能なBrowserslistパッケージを作成するには、配列をエクスポートします。
+共有可能なBrowserslist設定ファイルを作成するには、下記のように配列をエクスポートすればOKです。
 
 `browserslist-config-mycompany/index.js`
 
