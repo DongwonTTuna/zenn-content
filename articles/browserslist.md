@@ -24,6 +24,18 @@ ESLint、Autoprefixer、PostCSS、StyleLintなどの様々なフロントエン�
 - 複数のツールとの統合が可能。
 - 共有設定によるプロジェクト間の一貫性維持。
 
+## Browserslistで使用できるクエリ
+
+Browserslistは柔軟なクエリ構文を提供しており、以下のような指定も可能です。
+
+- `> 1%`: 全体のシェアが1%以上のブラウザ
+- `last 2 versions`: 最新2バージョンのブラウザ
+- `not dead`: サポートが終了していないブラウザ
+- `maintained node versions`: Node.jsのメンテナンスされているバージョン
+- `fully supports es6-module`: ES6モジュールを完全にサポートしているブラウザ
+
+設定したクエリがどれくらいのユーザーをカバーするかは、[https://browsersl.ist/](https://browsersl.ist/)で確認できます。
+
 ## Browserslistの設定方法
 
 ### 1. `package.json`に設定を追加
