@@ -3,7 +3,7 @@ title: "Elasticsearchのインデックスフィールドを直接削除でき�
 emoji: "🧬"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["Elasticsearch", "Lucene", "データベース", "インデックス"]
-published: false
+published: true
 publication_name: "nextbeat"
 ---
 ## はじめに
