@@ -196,7 +196,6 @@ npmやYarn Classic v1と同様のフラット構造を採用し、シンボリ�
 `hoisted`のpnpmの主要メリットを犠牲にする最終手段です。まずは`public-hoist-pattern`設定で特定パッケージのみホイストすることを検討してください。
 :::
 
-### 3. `pnp` (`Plug'n'Play`)：`node_modules`からの解放
 
 ### 3. `pnp` (Plug'n'Play) - 最速・最厳格モード
 
