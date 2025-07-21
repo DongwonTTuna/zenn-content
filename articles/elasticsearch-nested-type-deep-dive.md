@@ -4,6 +4,7 @@ emoji: "🔍"
 type: "tech"
 topics: ["Elasticsearch", "Lucene", "データモデリング", "検索エンジン", "パフォーマンス"]
 published: false
+publication_name: "nextbeat"
 ---
 
 ## Elasticsearchでユーザー情報を扱うときの落とし穴
