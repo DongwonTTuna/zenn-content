@@ -85,22 +85,130 @@ GET /my-index/_search
 
 ### どのオブジェクトがマッチしたか知りたいとき
 
-nested型の困った点は、デフォルトではどのオブジェクトがマッチしたのか分からないことです。`inner_hits`を使えば解決できます
+nested型の制限として、デフォルトではどのオブジェクトがマッチしたのか分からないという問題があります。
+
+例えば、コメント機能を持つブログシステムを考えてみましょう
 
 ```json
-GET /my-index/_search
+{
+  "title": "Elasticsearchの活用法",
+  "author": "山田太郎",
+  "comments": [
+    { "user": "Alice", "content": "とても分かりやすい記事でした！", "likes": 10 },
+    { "user": "Bob", "content": "実装例があって助かりました", "likes": 5 },
+    { "user": "Charlie", "content": "もっと詳しく知りたいです", "likes": 3 }
+  ]
+}
+```
+
+「実装」というキーワードでコメントを検索した場合、nestedクエリだけでは記事全体（すべてのコメントを含む）が返されるだけで、実際にどのコメントがマッチしたのかわかりません。
+
+この問題を解決するのが`inner_hits`機能です。`inner_hits`を使うことで、検索条件にマッチした特定のnestedオブジェクトを正確に特定できます。
+
+#### 基本的な使い方
+
+```json
+GET /blog/_search
 {
   "query": {
     "nested": {
-      "path": "user",
+      "path": "comments",
       "query": {
-        "match": { "user.first": "alice" }
+        "match": {
+          "comments.content": "実装"
+        }
       },
-      "inner_hits": {}
+      "inner_hits": {} 
     }
   }
 }
 ```
+
+#### オプションの活用した使い方
+
+`inner_hits`には以下のようなオプションを指定できます
+
+```json
+GET /blog/_search
+{
+  "query": {
+    "nested": {
+      "path": "comments",
+      "query": {
+        "match": {
+          "comments.content": "実装"
+        }
+      },
+      "inner_hits": {
+        "name": "matched_comments",        // 結果に名前を付ける
+        "size": 5,                        // 返すオブジェクトの最大数（デフォルト：3）
+        "from": 0,                        // ページング用のオフセット
+        "sort": [                         // マッチしたオブジェクトの並び順
+          { "comments.likes": { "order": "desc" } }
+        ],
+        "_source": ["comments.user", "comments.content"],  // 必要なフィールドのみ取得
+        "highlight": {                    // 検索語をハイライト表示
+          "fields": {
+            "comments.content": {}
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### 実際の検索結果
+
+上記のクエリを実行すると、以下のような結果が返ってきます
+特徴としては、どのコメントがマッチしたのか、`inner_hits`内に表示されている点です
+
+```json
+{
+  "hits": {
+    "hits": [
+      {
+        "_source": {
+          "title": "Elasticsearchの活用法",
+          "author": "山田太郎",
+          "comments": [...]  // 全コメントが含まれる
+        },
+        "inner_hits": {
+          "matched_comments": {
+            "hits": {
+              "total": { "value": 1 },
+              "hits": [
+                {
+                  "_nested": {
+                    "field": "comments",
+                    "offset": 1  // 配列内のインデックス
+                  },
+                  "_source": {
+                    "user": "Bob",
+                    "content": "実装例があって助かりました"
+                  },
+                  "highlight": {
+                    "comments.content": [
+                      "<em>実装</em>例があって助かりました"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+### パフォーマンスへの注意点
+
+もちろん`inner_hits`は便利な機能ですが、以下の点に注意が必要です
+
+- `max_inner_result_window`設定を超える過度なページングは避けましょう
+- 必要最小限のフィールドのみ`_source`で指定することで、パフォーマンスを改善できます
 
 ## nested型を使うケース
 
