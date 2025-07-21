@@ -1,0 +1,445 @@
+﻿Elasticsearch nested 타입 심층 분석: 아키텍처, 성능, 그리고 실전 전략
+
+
+
+
+서론: Elasticsearch에서 객체 배열 모델링의 핵심 과제
+
+
+Elasticsearch는 분산 검색 및 분석 엔진으로, 기본적으로 내부 객체(inner objects)라는 개념이 없습니다.1 이 아키텍처적 특징은 JSON 문서 내에 객체 배열을 색인할 때 중요한 결과를 낳습니다. 객체 배열이 포함된 문서를 색인하면, Elasticsearch는 이 계층 구조를 필드 이름과 값의 단순한 목록으로 평탄화(flattening)합니다.1
+이러한 평탄화 과정의 의미를 이해하기 위해 다음과 같은 사용자 정보를 담은 문서 예시를 살펴보겠습니다. 이 문서에는 user 필드에 두 개의 객체로 구성된 배열이 포함되어 있습니다.1
+
+
+JSON
+
+
+
+
+{
+ "group": "fans",
+ "user":
+}
+
+이 문서를 기본 object 타입으로 색인하면, Elasticsearch는 내부적으로 데이터를 다음과 같이 재구성하여 저장합니다 1:
+
+
+JSON
+
+
+
+
+{
+ "group": "fans",
+ "user.first": [ "john", "alice" ],
+ "user.last": [ "smith", "white" ]
+}
+
+이 내부 표현 방식의 심각한 문제는 각 객체 내 필드 간의 연관성이 사라진다는 점입니다. "John"과 "Smith", "Alice"와 "White" 사이의 원래 관계가 깨집니다. 이로 인해, user.first 필드 값이 "Alice"이고 user.last 필드 값이 "Smith"인 사용자를 찾는 쿼리를 실행하면, 예상과 달리 위 문서가 검색 결과에 포함되는 논리적 오류가 발생합니다.1
+user.first 배열에 "alice"가 있고 user.last 배열에 "smith"가 있기 때문입니다.
+이처럼 핵심적인 문제는 단순히 객체를 저장하는 것이 아니라, 배열 내 각 객체 내부의 *관계적 무결성(relational integrity)*을 쿼리 시점까지 유지하는 것입니다. 기본 object 타입은 이 무결성을 파괴합니다. Elasticsearch는 평탄한 구조에 최적화된 문서 저장소이지만 5, 기본 데이터 형식인 JSON은 중첩 구조를 지원합니다. 이 데이터를 검색 가능하게 만들기 위해 내부 검색 엔진인 Lucene은 이를 평탄화해야만 합니다. 이 과정에서 객체 배열 내의 키-값 쌍 그룹화가 깨지므로, 배열의 각 객체를 독립적인 쿼리 단위로 취급하도록 Elasticsearch에 지시하는 특별한 메커니즘이 필요합니다. 바로 이 역할을 수행하는 것이
+nested 데이터 타입입니다.
+
+
+섹션 1: nested 데이터 타입 심층 분석
+
+
+
+
+1.1. 핵심 개념: 독립적 쿼리를 위한 특수 object 타입
+
+
+nested 타입은 "객체 데이터 타입의 특화된 버전"으로 정의됩니다.1 이 타입의 유일한 목적은 객체 배열이 서로 독립적으로 색인되고 쿼리될 수 있도록 하는 것입니다.8 즉, 서론에서 설명한 평탄화 문제에 대한 직접적인 해결책입니다.
+
+
+1.2. 내부 동작 원리: "숨겨진 문서" 모델
+
+
+nested 타입의 성능 특성을 이해하려면 내부 동작 방식을 아는 것이 매우 중요합니다. nested 타입으로 지정된 필드의 객체들은 내부적으로 각각 별개의 숨겨진 Lucene 문서로 색인됩니다.1
+중요한 점은, 원본 문서(root document)와 그에 속한 모든 nested 객체(숨겨진 문서)들이 동일한 Lucene 블록 및 세그먼트에 함께 저장된다는 것입니다.12 이 데이터 지역성(co-location)은 다른 조인 방식에 비해
+nested 쿼리가 상대적으로 빠른 성능을 보이는 핵심적인 이유입니다. 예를 들어, 100개의 nested 객체를 가진 하나의 Elasticsearch 문서는 내부적으로 101개의 개별 Lucene 문서로 변환됩니다.10 이 사실은
+nested 타입이 왜 더 많은 인덱스 크기와 리소스를 소모하는지를 명확하게 설명해 줍니다.
+이러한 구조는 nested 타입이 단순한 기능이 아니라, Lucene 레벨에서 조인을 수행하기 위한 추상화 계층임을 시사합니다. Lucene은 근본적으로 평탄한 문서를 다루기 때문에 5, 관계를 모델링하려면 조인이 필요합니다.
+nested 타입은 색인 시점에 데이터를 미리 조인하는 특정 방식을 구현한 것입니다. 즉, 분리되어 있지만 물리적으로 인접한 문서들을 생성합니다. 따라서 nested 쿼리는 이 데이터 지역성을 활용하여 속도를 높이는 특수한 조인 쿼리입니다.4 이 추상화 덕분에 개발자는 수동 조인의 복잡성에서 벗어날 수 있지만, 전체 문서를 재색인해야 하는 것과 같은 기반 모델의 엄격한 제약을 감수해야 합니다.
+
+
+1.3. 주요 기능 및 활용법 (코드 예제 포함)
+
+
+nested 타입은 단순한 쿼리를 넘어 다양한 상호작용을 지원합니다.
+
+
+nested 쿼리
+
+
+nested 필드를 쿼리하는 기본적인 도구입니다. 서론에서 실패했던 bool 쿼리와 달리, nested 쿼리는 각 객체의 경계를 존중하여 정확한 결과를 반환합니다. 쿼리 시에는 반드시 path 파라미터를 사용하여 대상 nested 필드를 지정해야 합니다.1
+
+
+JSON
+
+
+
+
+GET my-index-000001/_search
+{
+ "query": {
+   "nested": {
+     "path": "user",
+     "query": {
+       "bool": {
+         "must":
+       }
+     }
+   }
+ }
+}
+
+이 쿼리는 user 배열 내에서 first가 "Alice"이고 last가 "White"인 객체를 정확히 찾아냅니다.1
+
+
+nested 및 reverse_nested 집계
+
+
+nested 필드에 대한 집계(aggregation)를 수행하려면 nested 집계를 사용해야 합니다.1 이를 통해
+nested 객체 내의 값들을 기준으로 통계를 낼 수 있습니다. 반대로 reverse_nested 집계를 사용하면 nested 컨텍스트에서 벗어나 상위 문서(root document)의 필드를 기준으로 집계할 수 있습니다.1
+
+
+JSON
+
+
+
+
+GET my-index-000001/_search
+{
+ "size": 0,
+ "aggs": {
+   "users": {
+     "nested": {
+       "path": "user"
+     },
+     "aggs": {
+       "last_names": {
+         "terms": { "field": "user.last.keyword" }
+       }
+     }
+   }
+ }
+}
+
+
+
+nested 정렬
+
+
+검색 결과를 nested 객체 내의 필드 값으로 정렬하려면 특별한 nested 정렬 구문을 사용해야 합니다.1
+
+
+JSON
+
+
+
+
+GET my-index-000001/_search
+{
+ "query": {... },
+ "sort": [
+   {
+     "user.last.keyword": {
+       "order": "asc",
+       "nested": {
+         "path": "user"
+       }
+     }
+   }
+ ]
+}
+
+
+
+nested Inner Hits
+
+
+nested 쿼리의 중요한 사용성 특징 중 하나는 inner_hits입니다. 기본적으로 nested 쿼리는 조건에 맞는 nested 객체를 포함하는 전체 상위 문서를 반환할 뿐, 어떤 nested 객체가 쿼리와 일치했는지는 알려주지 않습니다.19
+inner_hits는 이 문제를 해결하여, 검색 결과 내에서 구체적으로 어떤 nested 객체가 매칭되었는지 확인하고 하이라이트할 수 있게 해줍니다.1
+
+
+JSON
+
+
+
+
+GET my-index-000001/_search
+{
+ "query": {
+   "nested": {
+     "path": "user",
+     "query": {
+       "match": { "user.first": "Alice" }
+     },
+     "inner_hits": {}
+   }
+ }
+}
+
+
+
+섹션 2: nested 타입의 당위성: 장점 및 활용 사례
+
+
+
+
+2.1. 타협 없는 쿼리 정확성
+
+
+nested 타입의 가장 근본적인 장점은 객체 배열에 대한 쿼리가 논리적으로 정확함을 보장하는 것입니다. 서론의 예시에서 "Alice Smith"를 찾는 쿼리가 nested 타입을 사용했을 때 올바르게 아무 결과도 반환하지 않는 것처럼, nested는 쿼리 시점의 데이터 무결성을 보존합니다.3
+
+
+2.2. join 타입 대비 우수한 쿼리 성능
+
+
+nested 쿼리는 평탄한 데이터를 쿼리하는 것보다는 느리지만, join 타입(parent-child) 쿼리에 비해서는 월등히 빠릅니다. 여러 자료에 따르면 join 쿼리는 nested 쿼리보다 5배에서 10배 22, 심지어 수백 배까지 느려질 수 있다고 보고됩니다.15
+이 성능 차이는 쿼리 시점의 조인 로직에서 비롯됩니다. nested 조인은 상위 문서와 하위 문서가 동일한 Lucene 블록에 물리적으로 함께 위치하기 때문에 매우 빠릅니다.11 반면,
+join 쿼리는 더 비싼 글로벌 오디널(global ordinals) 조회와 메모리 집약적인 조인 맵을 필요로 하여 성능 저하를 유발합니다.14
+
+
+2.3. 원자적 데이터 관리
+
+
+전체 문서(상위 문서 + 모든 nested 객체)는 하나의 원자적 단위(atomic unit)로 취급됩니다. 문서를 업데이트하면 모든 부분이 동시에 업데이트되어 검색에 반영됩니다.5 이는 문서 내에서 강력한 일관성을 제공합니다.
+
+
+2.4. 실용적 시나리오: nested가 올바른 선택일 때
+
+
+nested 타입은 모든 상황에 적합한 만능 해결책이 아니며, 특정 시나리오에서 그 가치를 발휘합니다.
+* 읽기 위주, 드문 쓰기 (Read-Heavy, Write-Infrequently): nested 객체의 내용이 자주 변경되지 않고, 한 번 색인된 후 주로 읽기 작업에 사용되는 데이터에 가장 이상적입니다.5
+* 일대소(One-to-Few) 관계: 상위 문서가 관리 가능한 수의 nested 객체를 가질 때 적합합니다. 예를 들어, 상품의 속성, 게시물의 태그, 개인의 주소 목록 등이 해당됩니다.
+* 구체적인 활용 예시:
+   * 전자상거래: product 문서에 {color: "blue", size: "M"}, {color: "red", size: "L"}와 같은 attributes를 nested 배열로 포함하는 경우.4
+   * 콘텐츠 관리: blog_post 문서에 comments를 nested 배열로 포함하는 경우.9
+   * 이벤트 관리: event 문서에 참석자 목록(attendees)을 nested 배열로 포함하는 경우.
+
+
+섹션 3: 숨겨진 비용: 한계와 성능 트레이드오프
+
+
+nested 타입은 강력한 기능을 제공하지만, 그에 상응하는 비용과 한계를 명확히 인지해야 합니다.
+
+
+3.1. 아킬레스건: 색인 및 업데이트 비효율성
+
+
+nested 타입의 가장 큰 단점은 업데이트 비용입니다. Elasticsearch의 문서는 불변(immutable)합니다. 따라서 nested 객체 배열 중 단 하나의 객체에서 단 하나의 값만 추가, 수정 또는 삭제하더라도, Elasticsearch는 변경되지 않은 다른 모든 nested 객체를 포함한 전체 상위 문서를 재색인해야 합니다.2
+이 과정은 내부적으로 다음과 같이 진행됩니다: nested 객체 업데이트 요청이 오면, 기존 상위 문서와 그에 속한 모든 숨겨진 Lucene 문서들을 삭제됨(deleted)으로 표시하고, 변경 사항이 적용된 새로운 상위 문서와 그에 속한 모든 숨겨진 문서들을 새로 생성하여 색인합니다.2
+이러한 메커니즘은 nested 타입이 쓰기 작업이 빈번하거나 nested 데이터가 자주 변경되는 워크로드(예: 활발한 댓글 섹션)에 극도로 비효율적이고 부적합하게 만듭니다. 이 비용은 문서의 크기와 nested 객체의 수에 비례하여 증가합니다.10
+
+
+3.2. 쿼리 성능 오버헤드 및 복잡성
+
+
+* 쿼리 시점 조인: nested 쿼리는 본질적으로 쿼리 시점에 조인 연산을 수행하기 때문에, 평탄한 필드에 대한 단순 쿼리보다 더 많은 비용이 듭니다.4 이 과정은 더 많은 CPU와 메모리를 소모합니다.
+* 복잡한 구문: 쿼리 구문이 표준 쿼리보다 더 복잡하고 장황합니다. 개발자는 nested 쿼리라는 특정 구조를 사용해야 하므로 코드의 가독성이 저하될 수 있습니다.4
+
+
+3.3. 리소스 소비: 인덱스 크기, 메모리, 그리고 한계
+
+
+* 인덱스 팽창 (Index Bloat): 각 nested 객체가 별도의 Lucene 문서가 되기 때문에, Lucene 레벨의 총 문서 수가 크게 증가하여 전체 인덱스 크기가 팽창할 수 있습니다.4
+* 힙 메모리 사용량: nested 문서는 더 높은 힙 메모리 사용량을 유발할 수 있습니다.5
+* 물리적 한계: Elasticsearch는 과도한 사용과 매핑 폭발(mapping explosion)을 방지하기 위해 설정 가능한 한계를 두고 있습니다.
+   * index.mapping.nested_fields.limit: 인덱스당 허용되는 고유 nested 타입 매핑의 최대 개수 (기본값 50).10
+   * index.mapping.nested_objects.limit: 단일 문서가 모든 nested 타입을 통틀어 포함할 수 있는 nested JSON 객체의 최대 개수 (기본값 10,000).8
+
+
+3.4. 도구 및 기능적 제약
+
+
+* Kibana: nested 필드는 Kibana에서 완벽하게 지원되지 않습니다. Discover 탭에서 검색은 가능하지만, Lens와 같은 시각화 도구를 만드는 데 사용할 수 없습니다.1 이는 분석을 위해 Kibana에 크게 의존하는 사용자에게 중대한 실용적 제약입니다.
+* 객체 간 교차 참조 불가: 단일 쿼리 내에서 서로 다른 nested 문서 간에 "교차 참조"를 할 수 없습니다. 예를 들어, comments.author 필드로 필터링하면서 동시에 tags.name 필드로 집계하는 것은 동일한 nested 범위 내에서 불가능합니다.2
+이러한 특성들은 nested 타입의 선택이 단순한 스키마 결정이 아니라, 데이터 모델링, 애플리케이션 로직, 그리고 인프라 용량 사이에 긴밀한 결합을 만들어낸다는 점을 보여줍니다. 엔지니어가 쿼리 정확성 문제를 해결하기 위해 nested를 선택하면, 애플리케이션 개발자는 복잡한 nested 쿼리와 inner_hits 로직을 작성해야 합니다.4
+nested 데이터를 업데이트해야 할 경우, 애플리케이션은 변경된 부분만이 아닌 전체 문서를 전송해야 하므로 네트워크 트래픽과 색인 부하가 증가합니다.12 증가된 색인 및 쿼리 부하는 Elasticsearch 클러스터의 CPU, 메모리, 디스크 I/O에 더 큰 압박을 가하게 되고 4, 이는 결국 더 강력한 하드웨어나 더 큰 클러스터를 요구하여 인프라 비용에 영향을 미칠 수 있습니다.19 이처럼, 간단해 보이는 매핑 선택 하나가 전체 기술 스택에 걸쳐 광범위한 파급 효과를 낳습니다.
+
+
+섹션 4: 대안에 대한 비교 분석
+
+
+nested 타입이 유일한 해결책은 아닙니다. 데이터 모델링 전략을 수립할 때, 다른 옵션들과의 장단점을 비교하는 것이 필수적입니다.
+
+
+4.1. 기본 object 타입 (평탄화)
+
+
+* 사용 시점: 객체 배열이 있지만, 단일 객체 내 필드들의 조합으로 쿼리할 필요가 전혀 없을 때 사용합니다. 객체 간 상관관계가 문제되지 않는 단순한 데이터 구조에 적합합니다.8
+* 장점: 색인 및 쿼리 성능이 가장 높고, 모델이 가장 단순합니다.2
+* 단점: 필드 간 관계가 소실되어 복잡한 쿼리에서 부정확한 결과를 초래합니다.1
+
+
+4.2. flattened 타입
+
+
+* 사용 시점: 키의 개수가 매우 많거나 예측 불가능한 객체를 다룰 때 "매핑 폭발"을 방지하기 위해 사용합니다. (예: 사용자가 임의로 정의하는 메타데이터, 수많은 필드를 가진 로그 데이터).1
+* 장점: 매핑 필드 수 제한을 피할 수 있고, 색인 오버헤드가 낮습니다.27
+* 단점: 쿼리 기능에 심각한 제약이 있습니다. 모든 값은 keyword로 취급되어, 숫자 범위 쿼리, 하이라이팅, 다양한 집계 기능, 전문(full-text) 검색 분석이 불가능합니다.1
+nested 객체에 대한 풍부한 쿼리가 필요한 경우에는 진정한 대안이 될 수 없습니다.
+
+
+4.3. join 타입 (Parent-Child 관계)
+
+
+   * 사용 시점: "자식" 문서가 "부모" 문서와 독립적으로, 그리고 빈번하게 업데이트되는 일대다(one-to-many) 관계에 사용됩니다.12 이는
+nested 타입의 업데이트 비효율성에 대한 직접적인 대안입니다.
+   * 장점: 업데이트 효율성이 높습니다(자식 문서는 부모 재색인 없이 추가/수정/삭제 가능). 개념적으로 관계형 모델과 더 가깝습니다.9
+   * 단점: 쿼리 성능이 현저히 낮고(nested보다 5-10배 느림) 22, 조인 맵을 위한 메모리 오버헤드가 크며, 운영 복잡성(부모와 자식은 동일 샤드에 라우팅되어야 함)이 존재합니다.20
+
+
+4.4. 비정규화 및 애플리케이션-사이드 조인
+
+
+      * 사용 시점: 종종 가장 권장되는 "Elasticsearch-native" 접근 방식입니다. 데이터를 평탄하게 재구성하는 것을 의미하며, 이 과정에서 정보가 중복될 수 있습니다.4 예를 들어,
+sales nested 배열을 가진 product 문서 대신, 각 판매 문서가 관련 제품 정보를 포함하는 별도의 sales 인덱스를 생성하는 방식입니다.
+      * 장점: 검색 시점의 모든 조인을 회피하여 쿼리 성능을 극대화합니다. Elasticsearch 내에서는 가장 단순한 데이터 모델입니다.
+      * 단점: 복잡성이 애플리케이션 계층으로 이전되고(애플리케이션-사이드 조인), 데이터 중복으로 인해 저장 공간 비용이 증가하며, 업데이트가 복잡해집니다(여러 위치의 데이터를 업데이트해야 함).19
+
+
+4.5. 핵심 의사결정 표
+
+
+다음 표는 복잡한 트레이드오프를 명확하고 소화하기 쉬운 형식으로 요약하여, 사용자가 데이터 모델을 선택하는 데 중요한 도구가 될 것입니다.
+
+
+특징 / 특성
+	object (기본)
+	nested
+	flattened
+	join (Parent-Child)
+	비정규화 (Denormalization)
+	핵심 사용 사례
+	단순 객체, 배열에 대한 관계형 쿼리 불필요
+	독립적이고 정확한 쿼리가 필요한 객체 배열. 읽기 위주.
+	매핑 폭발 방지를 위한 다수/미지 키를 가진 객체.
+	자식 업데이트가 빈번한 일대다 관계. 쓰기 위주(자식).
+	쿼리 속도가 최우선인 성능 민감 애플리케이션.
+	관계 무결성
+	소실 (평탄화) 1
+	문서 내에서 보존 1
+	keyword로 보존되나, 타입별 쿼리 불가 28
+	별도 문서 간 유지 9
+	애플리케이션 로직으로 유지.
+	쿼리 성능
+	가장 높음 (단순 쿼리)
+	높음 (조인으로 인해 평탄 구조보다 느림) 4
+	높음 (keyword 스타일 쿼리에 한함) 27
+	낮음 (nested보다 5-10배 느림) 22
+	가장 높음 (ES 내 조인 없음).
+	색인/업데이트 성능
+	가장 높음
+	낮음 (어떤 변경이든 전체 문서 재색인) 5
+	높음
+	높음 (자식 업데이트 시); 부모 업데이트는 별개 14
+	보통 (여러 문서 업데이트 필요 가능).
+	쿼리 복잡성
+	낮음
+	높음 (nested 쿼리, inner_hits 필요) 4
+	낮음 (쿼리 타입 제한적) 28
+	높음 (has_child/has_parent 쿼리 필요) 9
+	낮음 (ES 내); 높음 (애플리케이션 내).
+	리소스 비용 (메모리/저장공간)
+	낮음
+	높음 (인덱스 팽창, 힙 사용량) 4
+	낮음 (단일 필드 매핑) 27
+	높음 (메모리 내 조인 맵, 샤드 관리 오버헤드) 20
+	높음 (데이터 중복으로 인한 저장 공간).19
+	
+
+섹션 5: 베스트 프랙티스 및 전략적 권장 사항
+
+
+
+
+5.1. 의사결정 프레임워크: 올바른 경로 선택하기
+
+
+데이터 모델을 선택할 때는 다음의 질문들을 순서대로 고려하는 것이 도움이 됩니다.
+         1. 객체 배열이 있는가? 없다면 평탄한 모델을 사용합니다.
+         2. 배열 내 객체들 내부의 필드 간 관계에 의존하는 쿼리가 필요한가? 그렇지 않다면 기본 object 타입을 사용합니다.
+         3. nested 객체는 얼마나 자주 업데이트되는가? 빈번하다면 nested는 위험합니다. join (자식이 독립적으로 업데이트될 경우) 또는 비정규화를 고려해야 합니다.5
+         4. 업데이트가 드물다면(읽기 위주), 쿼리 성능이 절대적으로 가장 중요한가? 그렇다면 비정규화를 먼저 고려합니다. nested의 성능이 "충분히 좋고" 애플리케이션-사이드 로직보다 관리가 더 간단하다면 nested를 사용합니다.22
+         5. 예측 불가능하고 많은 수의 필드를 가진 객체가 있는가? flattened를 사용하되, 쿼리 제약을 명확히 인지해야 합니다.1
+
+
+5.2. nested 타입 효과적으로 구현하기
+
+
+         * 매핑: nested 매핑은 항상 명시적으로 정의해야 합니다. 복잡한 객체에 대해 동적 매핑에 의존하지 마십시오.3
+         * 업데이트: nested 객체를 추가, 수정, 삭제할 때는 클라이언트에서 전체 문서를 가져와 다시 보내는 대신, Update API와 painless 스크립트를 사용하는 것이 표준적인 방법입니다.7 이를 통해 네트워크 오버헤드를 줄이고 업데이트 로직을 서버 측에서 처리할 수 있습니다.
+
+
+5.3. nested 쿼리 및 집계 최적화
+
+
+nested 타입의 성능을 극대화하기 위한 실용적인 튜닝 팁은 다음과 같습니다.
+         * 사전 필터링: nested 쿼리를 실행하기 전에 filter 컨텍스트나 상위 레벨의 bool 쿼리를 사용하여 문서 집합을 줄이는 것이 가장 효과적인 최적화 방법입니다. 이는 값비싼 nested 조인 연산을 최소한의 문서에 대해서만 수행하도록 보장합니다.17
+         * 버킷 수 제한: nested 집계 내에서 terms 집계를 사용할 때는 size 파라미터를 사용하여 반환되는 버킷 수를 제한하십시오. 이는 과도한 메모리 사용을 방지하는 데 도움이 됩니다.17
+         * composite 집계 사용: nested 필드에서 고유값(high-cardinality) 집계를 수행해야 할 경우, composite 집계를 사용하여 결과를 효율적으로 페이지네이션하십시오. 이는 메모리 부담을 크게 줄여줍니다.17
+         * 불필요한 스코어링 회피: 필터링만이 목적이라면, nested 쿼리를 bool 쿼리의 filter 절 안에 배치하여 스코어 계산 오버헤드를 피하십시오.33
+
+
+5.4. 고급 튜닝: include_in_parent와 include_in_root 하이브리드 전략
+
+
+         * 기능: include_in_parent 또는 include_in_root를 true로 설정하면, Elasticsearch는 nested 객체의 데이터를 두 번 색인합니다. 한 번은 별도의 nested 문서로, 다른 한 번은 상위(parent) 또는 최상위(root) 문서에 평탄화된 필드로 색인합니다.11
+         * 사용 사례: 이 하이브리드 접근 방식을 통해, 평탄화된 필드에 대해서는 빠르고 간단한 쿼리(예: Kibana에서의 필터링이나 단순 집계)를 사용하고, 완전한 관계 정확성이 필요할 때는 더 느리지만 정교한 nested 쿼리를 사용할 수 있습니다.13
+         * 트레이드오프: 비용은 데이터를 두 번 저장하기 때문에 증가하는 인덱스 크기와 색인 시간입니다.11 이는 전형적인 공간-시간 트레이드오프(space-time tradeoff)입니다.
+         * 폐지 논의: 이 옵션들은 더 명시적인 copy_to 파라미터를 선호하여 폐지가 고려되었지만, 모든 필드를 일일이 지정하지 않고 전체 객체를 편리하게 복사할 수 있다는 장점 때문에 여전히 남아있습니다.21
+
+
+5.5. 피해야 할 일반적인 함정
+
+
+         * nested 남용: 필요하지 않은 단순한 데이터 구조에 적용하여 불필요한 복잡성과 성능 오버헤드를 유발하는 경우.4
+         * nested 쿼리 망각: nested 필드를 표준 쿼리로 조회하여 부정확한 결과나 오류를 초래하는 경우.8
+         * 업데이트 비용 무시: 자주 업데이트되는 데이터에 nested를 사용하여 심각한 색인 성능 저하를 야기하는 경우.5
+         * 폐지 오해: nested 필드 타입은 폐지되지 않았으며, 폐지된 것은 Elasticsearch 7.x 이전의 도큐먼트 타입 개념이라는 점을 명확히 해야 합니다.19
+
+
+결론: Elasticsearch에서 관계형 데이터에 대한 전략적 접근
+
+
+이 보고서의 분석을 종합하면, Elasticsearch에서 관계형 데이터를 모델링하는 데 있어 "최고의" 보편적인 해결책은 없다는 결론에 이릅니다. 최적의 선택은 쿼리 요구사항, 업데이트 빈도, 성능 기대치, 그리고 운영 복잡성 사이의 균형을 맞추는 전략적인 결정입니다.
+nested 타입은 강력하지만 특화된 도구입니다. 이는 기본 선택이 아니라, 여러 도구 중 하나로 간주되어야 합니다. 많은 경우 "비정규화 우선" 사고방식이 가장 성능이 뛰어나고 확장 가능한 경로이며, nested나 join과 같은 도구는 비정규화가 비현실적이거나 불가능한 특정 사례를 위해 남겨두어야 합니다. 결국 이 보고서는 독자가 자신의 특정 사용 사례에 맞는 정보에 입각한, 상황 인식적인 결정을 내릴 수 있도록 역량을 부여하는 것을 목표로 합니다.
+참고 자료
+         1. Nested field type | Elasticsearch Guide [8.18] | Elastic, 7월 21, 2025에 액세스, https://www.elastic.co/guide/en/elasticsearch/reference/8.18/nested.html
+         2. Is it better to store nested data or use flat structure with unique names in JSON?, 7월 21, 2025에 액세스, https://stackoverflow.com/questions/58627991/is-it-better-to-store-nested-data-or-use-flat-structure-with-unique-names-in-jso
+         3. ElasticSearch: Understanding Nested Data Types | by Vipulbest - Medium, 7월 21, 2025에 액세스, https://vipulbest1.medium.com/elasticsearch-understanding-nested-data-types-8f523364e07
+         4. Nested Fields in Elasticsearch: Why and How to Avoid Them ..., 7월 21, 2025에 액세스, https://bigdataboutique.com/blog/nested-fields-in-elasticsearch-why-and-how-to-avoid-them-4495f6
+         5. Disadvantages of using nested type over flat type mapping - Elasticsearch - Elastic Discuss, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/disadvantages-of-using-nested-type-over-flat-type-mapping/159498
+         6. Nested field type | Reference - Elastic, 7월 21, 2025에 액세스, https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/nested
+         7. How to manage nested objects in Elasticsearch documents - iridakos, 7월 21, 2025에 액세스, https://iridakos.com/programming/2019/05/02/add-update-delete-elasticsearch-nested-objects
+         8. Elasticsearch Nested Field Data Type - Pulse, 7월 21, 2025에 액세스, https://pulse.support/kb/elasticsearch-nested-field-data-type
+         9. Nested Objects and Parent-Child Relationships in Elasticsearch - GeeksforGeeks, 7월 21, 2025에 액세스, https://www.geeksforgeeks.org/elasticsearch/nested-objects-and-parent-child-relationships-in-elasticsearch/
+         10. Elasticsearch : nested VS flat indicies - Stack Overflow, 7월 21, 2025에 액세스, https://stackoverflow.com/questions/58341418/elasticsearch-nested-vs-flat-indicies
+         11. Define relationship between Elasticsearch documents using nesting, 7월 21, 2025에 액세스, https://opster.com/guides/elasticsearch/data-architecture/how-to-model-relationships-between-documents-in-elasticsearch-using-nesting/
+         12. Data Modeling in Elasticsearch: Using Nested Queries and Parent-Child Relationships, 7월 21, 2025에 액세스, https://hackernoon.com/data-modeling-in-elasticsearch-using-nested-queries-and-parent-child-relationships
+         13. 8.3. Nested type: connecting nested documents | Elasticsearch in Action, 7월 21, 2025에 액세스, https://weng.gitbooks.io/elasticsearch-in-action/chapter8_relations_among_documents/83nested_type_connecting_nested_documents.html
+         14. elasticsearch - Scaling with regard to Nested vs Parent/Child Documents - Stack Overflow, 7월 21, 2025에 액세스, https://stackoverflow.com/questions/14939078/scaling-with-regard-to-nested-vs-parent-child-documents
+         15. Nested types are slower? - Elasticsearch - Discuss the Elastic Stack, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/nested-types-are-slower/90546
+         16. Understanding how nested types are stored in ES - Elasticsearch - Discuss the Elastic Stack, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/understanding-how-nested-types-are-stored-in-es/84634
+         17. Optimizing Nested Aggregations in Elasticsearch - Opster, 7월 21, 2025에 액세스, https://opster.com/guides/elasticsearch/search-apis/optimizing-nested-aggregations-elasticsearch/
+         18. Exploring Elasticsearch's Nested Query: Unraveling Complex Data Structures - Medium, 7월 21, 2025에 액세스, https://medium.com/@saikumar0303/exploring-elasticsearchs-nested-query-unraveling-complex-data-structures-b9936459ae19
+         19. Querying limited nested data (However nested type is deprecated in 7.x) - Elasticsearch, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/querying-limited-nested-data-however-nested-type-is-deprecated-in-7-x/238329
+         20. Parent-child vs Nested Joins in Elasticsearch - gigasearch, 7월 21, 2025에 액세스, https://blog.gigasearch.co/parent-child-vs-nested-joins-in-elasticsearch/
+         21. Deprecate `include_in_root` and `include_in_parent`? · Issue #12461 · elastic/elasticsearch, 7월 21, 2025에 액세스, https://github.com/elastic/elasticsearch/issues/12461
+         22. Choosing Between Nested Queries and Parent-Child Relationships ..., 7월 21, 2025에 액세스, https://medium.com/rocksetcloud/choosing-between-nested-queries-and-parent-child-relationships-in-elasticsearch-f85abaa802e9
+         23. What are the pros and cons of using Nested mapping in Elasticsearch vs parent child relationship - Stack Overflow, 7월 21, 2025에 액세스, https://stackoverflow.com/questions/46313207/what-are-the-pros-and-cons-of-using-nested-mapping-in-elasticsearch-vs-parent-ch
+         24. Choosing the Right Elasticsearch Index Data Structure - Dixa, 7월 21, 2025에 액세스, https://www.dixa.com/blog/to-nest-or-not-to-nest-choosing-the-right-elasticsearch-index-data-structure/
+         25. Too many properties: should we increase the property limit or use a nested approach and increase that limit? - Elasticsearch - Elastic Discuss, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/too-many-properties-should-we-increase-the-property-limit-or-use-a-nested-approach-and-increase-that-limit/328179
+         26. Performance of nested type in elasticsearch - Stack Overflow, 7월 21, 2025에 액세스, https://stackoverflow.com/questions/69240137/performance-of-nested-type-in-elasticsearch
+         27. Flattened Datatype Mappings - Elasticsearch Tutorial - Coralogix, 7월 21, 2025에 액세스, https://coralogix.com/blog/flattened-datatype-mappings-elasticsearch-tutorial/
+         28. Flattened field type | Elasticsearch Guide [8.18] | Elastic, 7월 21, 2025에 액세스, https://www.elastic.co/guide/en/elasticsearch/reference/8.18/flattened.html
+         29. Elastic mapping flattened vs field wise - Elasticsearch, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/elastic-mapping-flattened-vs-field-wise/362151
+         30. Elasticsearch flattened Field Data Type - Pulse, 7월 21, 2025에 액세스, https://pulse.support/kb/elasticsearch-flattened-field-data-type
+         31. 8.4. Parent-child relationships: connecting separate documents | Elasticsearch in Action, 7월 21, 2025에 액세스, https://weng.gitbooks.io/elasticsearch-in-action/content/chapter8_relations_among_documents/84parent_-childrelationships_connecting_separate_d.html
+         32. How to optimize Elasticsearch for search speed without breaking the bank | Slimane Akalië, 7월 21, 2025에 액세스, https://www.slimane.io/articles/how-to-optimize-elasticsearch-for-search-speed
+         33. Optimizing Queries: Avoid Scoring on Nested Objects - Elasticsearch - Elastic Discuss, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/optimizing-queries-avoid-scoring-on-nested-objects/74780
+         34. How do Elasticsearch's "include_in_parent" / "include_in_root" work? Should it show in '_source'? - Stack Overflow, 7월 21, 2025에 액세스, https://stackoverflow.com/questions/28274981/how-do-elasticsearchs-include-in-parent-include-in-root-work-should-it-s
+         35. Nested Fields in an Index - Elasticsearch - Discuss the Elastic Stack, 7월 21, 2025에 액세스, https://discuss.elastic.co/t/nested-fields-in-an-index/371311
+         36. [DOCS] Mapping options `include_in_root` and `include_in_parent` are not documented · Issue #52309 · elastic/elasticsearch - GitHub, 7월 21, 2025에 액세스, https://github.com/elastic/elasticsearch/issues/52309
