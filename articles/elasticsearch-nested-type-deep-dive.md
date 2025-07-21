@@ -6,28 +6,39 @@ topics: ["Elasticsearch", "Lucene", "データモデリング", "検索エンジ
 published: false
 ---
 
-## オブジェクト配列の検索で困ったことはありませんか
+## Elasticsearchでユーザー情報を扱うときの落とし穴
 
-Elasticsearchでユーザー情報を検索していたら、こんな経験をしたことはないでしょうか。
+最近のWebアプリケーションでは、ユーザー情報の高速検索にElasticsearchを使うことが多くなってきました。複数のユーザー情報を含む文書を扱うケースも珍しくありません。
 
-「Alice White」というユーザーを検索したはずなのに、なぜか「John Smith」と「Alice White」の両方が入った文書がヒットしてしまう。データは正しく入っているはずなのに、検索結果がおかしい...
+たとえば、プロジェクト管理システムで「このプロジェクトに参加しているユーザー一覧」のようなデータです。一見シンプルに見えるこの検索機能、実は意外な落とし穴があるんです。
 
-実はこれ、Elasticsearchの仕様によるものです。
+具体例を見てみましょう。
+
+- プロジェクトA：「Alice Smith」と「Bob White」が参加
+- プロジェクトB：「Carol Johnson」と「Alice White」が参加
+
+「Alice White」で検索したら、当然プロジェクトB（本当にAlice Whiteさんがいる）だけが返ってくると思いますよね？
+
+ところが実際にElasticsearchで検索してみると、なぜかプロジェクトAまでヒットしてしまうんです。プロジェクトAには「Alice White」という人はいないのに...
+
+なぜこんなことが起きるのでしょうか？実は「Alice」（Alice Smithの名前）と「White」（Bob Whiteの苗字）が別々の人物なのに、Elasticsearchはこれらを組み合わせて「Alice White」として認識してしまうからです。
+
+これ、実はElasticsearchがオブジェクト配列を扱う際の仕様によるものなんです。
 
 ## Elasticsearchがオブジェクト配列を平坦化する理由
 
-以下のような文書をインデックスしてみましょう
+以下のようなプロジェクトAの文書をインデックスしてみましょう
 
 ```json
 {
-  "group": "fans",
-  "user": [
+  "project": "projectA",
+  "users": [
     {
-      "first": "john",
+      "first": "alice",
       "last": "smith"
     },
     {
-      "first": "alice",
+      "first": "bob",
       "last": "white"
     }
   ]
@@ -38,13 +49,13 @@ Elasticsearchでユーザー情報を検索していたら、こんな経験を�
 
 ```json
 {
-  "group": "fans",
-  "user.first": ["john", "alice"],
-  "user.last": ["smith", "white"]
+  "project": "projectA",
+  "users.first": ["alice", "bob"],
+  "users.last": ["smith", "white"]
 }
 ```
 
-配列内のオブジェクトがバラバラになってしまいました。これで「first: alice AND last: smith」で検索すると、本来存在しない組み合わせでも文書がヒットしてしまうわけです。
+配列内のオブジェクトがバラバラになってしまいました。これで「first: alice AND last: white」で検索すると、本来存在しない「Alice White」という組み合わせでも文書がヒットしてしまうわけです。
 
 なぜこんなことが起きるのかを言いますと、Elasticsearchの基盤であるLuceneが、根本的に平坦な構造しか扱えないからです。
 
@@ -67,12 +78,12 @@ GET /my-index/_search
 {
   "query": {
     "nested": {
-      "path": "user",
+      "path": "users",
       "query": {
         "bool": {
           "must": [
-            { "match": { "user.first": "alice" }},
-            { "match": { "user.last": "white" }}
+            { "match": { "users.first": "alice" }},
+            { "match": { "users.last": "white" }}
           ]
         }
       }
@@ -282,12 +293,12 @@ nested検索は重いので、まず通常のフィルタで文書を絞り込�
   "query": {
     "bool": {
       "filter": [
-        { "term": { "group": "fans" } }  // まずこれで絞る
+        { "term": { "project": "projectA" } }  // まずこれで絞る
       ],
       "must": [
         {
           "nested": {
-            "path": "user",
+            "path": "users",
             "query": { ... }
           }
         }
@@ -308,7 +319,7 @@ nested検索は重いので、まず通常のフィルタで文書を絞り込�
 {
   "mappings": {
     "properties": {
-      "user": {
+      "users": {
         "type": "nested",
         "include_in_parent": true
       }
