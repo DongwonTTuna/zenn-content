@@ -76,14 +76,16 @@ Elasticsearchを使っていると、オブジェクト配列の検索で思わ�
 
 ### Nested型とは
 
-[Nested型](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)は、オブジェクト配列の各要素の独立性を保つための特殊なデータ型です。
+[Nested型](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)は、オブジェクト配列の各要素を独立した文書として保存し、要素間の関係性を保持する特殊なデータ型です。
 
 ### Nested型の仕組み
 
-Nested型を使うと、配列内の各オブジェクトが独立した「隠れた文書」として保存されます。公式ドキュメントによると：
+Nested型を使うと、配列内の各オブジェクトが独立した「隠れた文書」として保存されます。
 
-> 各Nestedオブジェクトは独立したLucene文書としてインデックスされます。100個のユーザーオブジェクトを含む1つの文書をインデックスすると、101個のLucene文書が作成されます：親文書1個とNestedオブジェクト100個です。
-
+例えば100個のユーザーオブジェクトを含む1つの文書をインデックスすると、101個のLucene文書が作成されます。
+:::message
+各Nestedオブジェクトは独立したLucene文書としてインデックスされます。
+:::
 これらの文書は同じLuceneセグメント内に物理的に隣接して配置されるため、効率的にクエリを実行できます。
 
 ### 使い方
@@ -110,7 +112,7 @@ PUT /project-index
 
 #### 基本的なクエリ
 
-[Nestedクエリ](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-nested-query.html)を使って検索します：
+[Nestedクエリ](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-nested-query.html)を使って検索します
 
 ```json
 GET /project-index/_search
@@ -137,46 +139,57 @@ GET /project-index/_search
 
 ### パフォーマンスへの影響
 
-Elasticsearchの公式ドキュメントは、Nested型のパフォーマンスコストについて明確に警告しています：
+[Elasticsearchの公式ドキュメント](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/nested)では、Nested型のパフォーマンスコストについて明確に警告しています。
 
-> Nested文書とクエリは通常高コストです。
+> Nested documents and queries are typically expensive 
+> (Nested文書とクエリは通常高コストです。)
 
-#### インデックスサイズの増加
+各Nestedオブジェクトが独立した文書として保存されるため、通常のオブジェクト型のインデックスと比べるとインデックスサイズが大幅に増加します。
 
-各Nestedオブジェクトが独立した文書として保存されるため、インデックスサイズが大幅に増加します。例えば：
+例えば
 
 - 1つのプロジェクト文書に10人のメンバーがいる場合
 - 実際には11個の文書（親文書1個 + メンバー10個）が作成される
 - 1000個のプロジェクトなら、11,000個の文書になる
 
-#### 更新コストの問題
+また、Nested型の問題はスペースだけではありません。
 
-Nested型の最大の問題は更新コストです。1つのNestedオブジェクトを更新するだけで、**文書全体**を再インデックスする必要があります。
+Nested型の最大の問題は更新コストです。
+1つのNestedオブジェクトを更新するだけで、**文書全体**を再インデックスする必要があります。
 
 ```
 更新コスト = 親文書の再インデックス + (すべてのNested数 × Nested再インデックスコスト)
 ```
 
+たった1つのフィールドを更新するだけで、文書全体を再インデックスする必要があるなんて、非常に非効率的ですよね。
+
+これらのスペースの浪費と更新コストを未然に防ぐために、ElasticsearchはNested型の使用にいくつかの制限を設けています。
+
+- インデックス内の異なるNestedマッピングの最大数：デフォルトで50
+- 1つの文書が含むことができるNestedオブジェクトの最大数に制限がある
+  
+長所もあれば短所もありますので、多方面から慎重に考慮・検討する必要があります。
+何故ESの公式ドキュメントでNested型の使用は慎重に検討するように警告されているかがわかりますね。
+
 ### Kibanaでの制限
 
-公式ドキュメントによると：
+パフォーマンス的な問題もあれば、今度はKibanaでの制限もあります。
+以下[公式ドキュメント](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/nested)から抜粋した内容です。
 
-> NestedフィールドはKibanaでの不完全なサポートしかありません。Discoverでは表示・検索可能ですが、Lensでビジュアライゼーションを構築することはできません。
+> Nested fields have incomplete support in Kibana. While they are visible and searchable in Discover, they cannot be used to build visualizations in Lens.
+> (NestedフィールドはKibanaでの不完全なサポートしかありません。Discoverでは表示・検索可能ですが、Lensでビジュアライゼーションを構築することはできません。)
 
-### パフォーマンスのセーフガード
+KibanaのDiscoverではNested型のフィールドは表示できますが、Lensなどのビジュアライゼーションツールでは使用できないとのことです。
 
-Elasticsearchは、パフォーマンス問題を防ぐためにいくつかの制限を設けています：
+もしKibanaでの分析やダッシュボード作成を重視する場合、Nested型は避けた方が良いでしょう。
 
-- インデックス内の異なるNestedマッピングの最大数：50（デフォルト）
-- 1つの文書が含むことができるNestedオブジェクトの最大数に制限がある
-
-## 注意点・問題点の解消方法
+## 注意点・問題点やその解消方法
 
 ### inner_hitsの活用
 
-Nested型の制限として、デフォルトではどのオブジェクトがマッチしたのか分からないという問題があります。これを解決するのが[inner_hits](https://www.elastic.co/guide/en/elasticsearch/reference/current/inner-hits.html)機能です。
+Nested型のクエリ検索時に、デフォルトではその条件に当てはまるドキュメント単位で返ってくるので、具体的にどのNestedオブジェクトがマッチしたのか分からないという問題があります。これを解決するのが[inner_hits](https://www.elastic.co/guide/en/elasticsearch/reference/current/inner-hits.html)機能です。
 
-例えば、プロジェクト管理システムで「エンジニア」という役職で検索した場合：
+例えば、プロジェクト管理システムで「エンジニア」という役職で検索した場合
 
 ```json
 GET /project-index/_search
@@ -202,7 +215,7 @@ GET /project-index/_search
 }
 ```
 
-これにより、マッチしたメンバーの情報が`inner_hits`として返されます：
+これにより、マッチしたメンバーの情報が`inner_hits`として返されます
 
 ```json
 {
@@ -236,7 +249,7 @@ GET /project-index/_search
 
 ### include_in_parentの活用
 
-[include_in_parent](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)パラメータを使うと、Nestedフィールドをフラット構造でも検索できるようになります：
+[include_in_parent](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)パラメータを設定すると、データがNested型とフラット構造の両方でインデックスされるため、Nestedクエリと通常のクエリの両方で検索できるようになります。
 
 ```json
 PUT /project-index
@@ -260,7 +273,7 @@ PUT /project-index
 
 ### フィルタリングを併用
 
-Nested検索は高コストなので、まず通常のフィルタで文書を絞り込んでから実行しましょう：
+Nested検索は高コストなので、まず通常のフィルタで文書を絞り込んでから実行しましょう
 
 ```json
 {
@@ -330,14 +343,9 @@ Nested型は、Elasticsearchでオブジェクト配列の関係性を保持す�
 
 しかし、公式ドキュメントが警告するように「Nested文書とクエリは通常高コスト」であることを忘れてはいけません。
 
-導入前のチェックリスト：
-- [ ] 本当にオブジェクトの独立性が必要か？
-- [ ] 更新頻度は低いか？
-- [ ] オブジェクト数は適切か？（数個〜数十個程度）
-- [ ] Kibanaでの分析は不要か？
-- [ ] パフォーマンステストは実施したか？
+多くの場合、データモデルを見直して非正規化する方が、シンプルで高速な解決策になることもあります。
 
-多くの場合、データモデルを見直して非正規化する方が、シンプルで高速な解決策になることもあります。Nested型は強力ですが、適切な場面で使ってこそ真価を発揮します。
+なのでもし導入を検討しているなら、慎重に要件を分析し、Nested型の使用が本当に必要かどうかを検討してください。
 
 ## 参考リンク
 
