@@ -11,91 +11,118 @@ publication_name: "nextbeat"
 
 Elasticsearchを使っていると、オブジェクト配列の検索で思わぬ落とし穴にハマることがあります。
 
-例えばElasticsearchで、以下のようなオブジェクト配列データを検索するとしてみましょう。
+例えばプロジェクト管理システムで、以下のようなオブジェクト配列データを検索するとしてみましょう。
 
 ```json
 // プロジェクトA
 {
-  "project": "projectA",
-  "users": [
-    { "first": "Alice", "last": "Smith" }, // Alice Smith
-    { "first": "Bob", "last": "White" } // Bob White
+  "project": "AI開発プロジェクト",
+  "members": [
+    { "name": "田中", "role": "リーダー" },
+    { "name": "佐藤", "role": "エンジニア" }
   ]
 }
 
 // プロジェクトB
 {
-  "project": "projectB",
-  "users": [
-    { "first": "Carol", "last": "Johnson" }, // Carol Johnson
-    { "first": "Alice", "last": "White" } // Alice White
+  "project": "Web開発プロジェクト",
+  "members": [
+    { "name": "鈴木", "role": "デザイナー" },
+    { "name": "田中", "role": "エンジニア" }
   ]
 }
 ```
-- プロジェクトA：「Alice Smith」と「Bob White」が参加
-- プロジェクトB：「Carol Johnson」と「Alice White」が参加
 
-この時、「`Alice White`」で検索したら、当然プロジェクトB（本当にAlice Whiteさんがいる）だけが返ってくると思いますよね？
+この時、「田中さんがエンジニアとして参加しているプロジェクト」を検索したら、当然プロジェクトBだけが返ってくると思いますよね？
 
-ところが実際にElasticsearchで検索してみると、なぜかプロジェクトAまでヒットしてしまうんです。プロジェクトAには「`Alice White`」という人はいないのに...
+ところが実際にElasticsearchで検索してみると、なぜかプロジェクトAまでヒットしてしまうんです。プロジェクトAの田中さんは「リーダー」なのに...
 
-なぜこんなことが起きるのかというと、実は「`Alice`」（Alice Smithの名前）と「`White`」（Bob Whiteの苗字）が別々の人物なのに、Elasticsearchはこれらを組み合わせて「`Alice White`」として認識してしまうからです。
+なぜこんなことが起きるかを説明していきたいと思います。
 
-## Elasticsearchはオブジェクト配列を内部的に平坦化します
+## オブジェクト配列の平坦化問題
 
-先のプロジェクトAの文書をインデックスしてみましょう。
+### Elasticsearchの内部動作
 
-```json
-{
-   "project": "projectA",
-   "users": [
-      { "first": "Alice", "last": "Smith" },
-      { "first": "Bob", "last": "White" }
-   ]
-}
-```
+[Elasticsearchの公式ドキュメント](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)によると、Elasticsearchはオブジェクトの階層構造を理解しません。代わりに、オブジェクト階層をフィールド名と値のシンプルなリストに平坦化します。
 
-すると驚くことに、Elasticsearchは内部的にこのデータを次のように変換してしまいます
+先のプロジェクトAの文書をインデックスすると、内部的にこのようになります
 
 ```json
 {
-  "project": "projectA",
-  "users.first": ["Alice", "Bob"],
-  "users.last": ["Smith", "White"]
+  "project": "AI開発プロジェクト",
+  "members.name": ["田中", "佐藤"],
+  "members.role": ["リーダー", "エンジニア"]
 }
 ```
 
-配列内のオブジェクトがバラバラになってしまいました。
+配列内の各オブジェクトがバラバラになり、フィールドごとにまとめられてしまいました。これを「平坦化（フラット化）」と呼びます。
 
-これで「`first: alice` **AND** `last: white`」で検索すると、本来存在しない「`Alice White`」という組み合わせでも文書がヒットしてしまうわけです。
+この挙動は、Elasticsearchの基盤である[Apache Lucene](https://lucene.apache.org/)が根本的に平坦な構造しか扱えないことに起因します。
 
-なぜこんなことが起きるのかを言いますと、Elasticsearchの基盤であるLuceneが、根本的に平坦な構造しか扱えないからです。
+### 検索時の問題
 
-## ここでNested型の登場
+この平坦化により、「`name: 田中` **AND** `role: エンジニア`」で検索すると
+- 「田中」は確かに存在する（ただしリーダーとして）
+- 「エンジニア」も確かに存在する（ただし佐藤さんの役職として）
 
-この問題を解決するのがNested型です。
+両方の条件を満たすため、プロジェクトAがヒットしてしまうのです。
 
-Nested型を使うと、配列内の各オブジェクトを独立した「隠れた文書」として保存します。100個のオブジェクトを含む配列があれば、内部的には101個の文書（親文書1個 + 子文書100個）として管理されるイメージです。
+とはいえ、私たちは「田中さんがエンジニアとして参加しているプロジェクト」を探しているので、この結果は明らかに誤検出です。
 
-※ これらの文書は同じLuceneセグメント内に物理的に隣接して配置されます。
+では、どうすればこの問題を解決できるのでしょうか？
+そこで登場するのがElasticsearchの[Nested型](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)です。
 
-## Nested型の使い方
+## Nested型について
 
-### 基本的なクエリ
+### Nested型とは
 
-通常のクエリとは少し違い、専用の`Nested`クエリを使います
+[Nested型](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)は、オブジェクト配列の各要素の独立性を保つための特殊なデータ型です。
+
+### Nested型の仕組み
+
+Nested型を使うと、配列内の各オブジェクトが独立した「隠れた文書」として保存されます。公式ドキュメントによると：
+
+> 各Nestedオブジェクトは独立したLucene文書としてインデックスされます。100個のユーザーオブジェクトを含む1つの文書をインデックスすると、101個のLucene文書が作成されます：親文書1個とNestedオブジェクト100個です。
+
+これらの文書は同じLuceneセグメント内に物理的に隣接して配置されるため、効率的にクエリを実行できます。
+
+### 使い方
+
+#### マッピングの定義
 
 ```json
-GET /my-index/_search
+PUT /project-index
+{
+  "mappings": {
+    "properties": {
+      "project": { "type": "text" },
+      "members": {
+        "type": "nested",  // ここがポイント
+        "properties": {
+          "name": { "type": "text" },
+          "role": { "type": "text" }
+        }
+      }
+    }
+  }
+}
+```
+
+#### 基本的なクエリ
+
+[Nestedクエリ](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-nested-query.html)を使って検索します：
+
+```json
+GET /project-index/_search
 {
   "query": {
     "nested": {
-      "path": "users",
+      "path": "members",
       "query": {
         "bool": {
           "must": [
-            { "match": { "users.first": "alice" }},
-            { "match": { "users.last": "white" }}
+            { "match": { "members.name": "田中" }},
+            { "match": { "members.role": "エンジニア" }}
           ]
         }
       }
@@ -104,75 +131,69 @@ GET /my-index/_search
 }
 ```
 
-`path`パラメータでNestedフィールドを指定するのがポイントです。
+これで、実際に「田中さんがエンジニアとして参加しているプロジェクト」だけが正確にヒットします。
 
-### どのオブジェクトがマッチしたか知りたいとき
+## Nested型使用時の注意点・問題点
 
-Nested型の制限として、デフォルトではどのオブジェクトがマッチしたのか分からないという問題があります。
+### パフォーマンスへの影響
 
-例えば、コメント機能を持つブログシステムを考えてみましょう
+Elasticsearchの公式ドキュメントは、Nested型のパフォーマンスコストについて明確に警告しています：
 
-```json
-{
-  "title": "Elasticsearchの活用法",
-  "author": "山田太郎",
-  "comments": [
-    { "user": "Alice", "content": "とても分かりやすい記事でした！", "likes": 10 },
-    { "user": "Bob", "content": "実装例があって助かりました", "likes": 5 },
-    { "user": "Charlie", "content": "もっと詳しく知りたいです", "likes": 3 }
-  ]
-}
+> Nested文書とクエリは通常高コストです。
+
+#### インデックスサイズの増加
+
+各Nestedオブジェクトが独立した文書として保存されるため、インデックスサイズが大幅に増加します。例えば：
+
+- 1つのプロジェクト文書に10人のメンバーがいる場合
+- 実際には11個の文書（親文書1個 + メンバー10個）が作成される
+- 1000個のプロジェクトなら、11,000個の文書になる
+
+#### 更新コストの問題
+
+Nested型の最大の問題は更新コストです。1つのNestedオブジェクトを更新するだけで、**文書全体**を再インデックスする必要があります。
+
+```
+更新コスト = 親文書の再インデックス + (すべてのNested数 × Nested再インデックスコスト)
 ```
 
-「実装」というキーワードでコメントを検索した場合、Nestedクエリだけでは記事全体（すべてのコメントを含む）が返されるだけで、実際にどのコメントがマッチしたのかわかりません。
+### Kibanaでの制限
 
-この問題を解決するのが`inner_hits`機能です。`inner_hits`を使うことで、検索条件にマッチした特定のNestedオブジェクトを正確に特定できます。
+公式ドキュメントによると：
 
-#### 基本的な使い方
+> NestedフィールドはKibanaでの不完全なサポートしかありません。Discoverでは表示・検索可能ですが、Lensでビジュアライゼーションを構築することはできません。
+
+### パフォーマンスのセーフガード
+
+Elasticsearchは、パフォーマンス問題を防ぐためにいくつかの制限を設けています：
+
+- インデックス内の異なるNestedマッピングの最大数：50（デフォルト）
+- 1つの文書が含むことができるNestedオブジェクトの最大数に制限がある
+
+## 注意点・問題点の解消方法
+
+### inner_hitsの活用
+
+Nested型の制限として、デフォルトではどのオブジェクトがマッチしたのか分からないという問題があります。これを解決するのが[inner_hits](https://www.elastic.co/guide/en/elasticsearch/reference/current/inner-hits.html)機能です。
+
+例えば、プロジェクト管理システムで「エンジニア」という役職で検索した場合：
 
 ```json
-GET /blog/_search
+GET /project-index/_search
 {
   "query": {
     "nested": {
-      "path": "comments",
+      "path": "members",
       "query": {
-        "match": {
-          "comments.content": "実装"
-        }
-      },
-      "inner_hits": {} 
-    }
-  }
-}
-```
-
-#### オプションの活用した使い方
-
-`inner_hits`には以下のようなオプションを指定できます
-
-```json
-GET /blog/_search
-{
-  "query": {
-    "nested": {
-      "path": "comments",
-      "query": {
-        "match": {
-          "comments.content": "実装"
-        }
+        "match": { "members.role": "エンジニア" }
       },
       "inner_hits": {
-        "name": "matched_comments",        // 結果に名前を付ける
-        "size": 5,                        // 返すオブジェクトの最大数
-        "from": 0,                        // ページング用のオフセット
-        "sort": [                         // マッチしたオブジェクトの並び順
-          { "comments.likes": { "order": "desc" } }
-        ],
-        "_source": ["comments.user", "comments.content"],  // 必要なフィールドのみ取得
-        "highlight": {                    // 検索語をハイライト表示
+        "name": "matched_members",
+        "size": 3,
+        "_source": ["members.name", "members.role"],
+        "highlight": {
           "fields": {
-            "comments.content": {}
+            "members.role": {}
           }
         }
       }
@@ -181,144 +202,80 @@ GET /blog/_search
 }
 ```
 
-#### 実際の検索結果
-
-上記のクエリを実行すると、以下のような結果が返ってきます
-ポイントは、どのコメントがマッチしたのか、`inner_hits`内に表示されている点です
+これにより、マッチしたメンバーの情報が`inner_hits`として返されます：
 
 ```json
 {
   "hits": {
-    "hits": [
-      {
-        "_source": {
-          "title": "Elasticsearchの活用法",
-          "author": "山田太郎",
-          "comments": [...]  // 全コメントが含まれる
-        },
-        "inner_hits": {
-          "matched_comments": {
-            "hits": {
-              "total": { "value": 1 },
-              "hits": [
-                {
-                  "_nested": {
-                    "field": "comments",
-                    "offset": 1  // 配列内のインデックス
-                  },
-                  "_source": {
-                    "user": "Bob",
-                    "content": "実装例があって助かりました"
-                  },
-                  "highlight": {
-                    "comments.content": [
-                      "<em>実装</em>例があって助かりました"
-                    ]
-                  }
-                }
-              ]
+    "hits": [{
+      "_source": {
+        "project": "Web開発プロジェクト",
+        "members": [...]
+      },
+      "inner_hits": {
+        "matched_members": {
+          "hits": [{
+            "_nested": {
+              "field": "members",
+              "offset": 1
+            },
+            "_source": {
+              "name": "田中",
+              "role": "エンジニア"
+            },
+            "highlight": {
+              "members.role": ["<em>エンジニア</em>"]
             }
-          }
+          }]
         }
       }
-    ]
+    }]
   }
 }
 ```
 
-### パフォーマンスへの注意点
+### include_in_parentの活用
 
-- `max_inner_result_window`設定を超える過度なページングは避けてください。
-- パフォーマンスが気になる場合は、必要最小限のフィールドのみ`_source`で指定することで、パフォーマンスを改善できます
+[include_in_parent](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)パラメータを使うと、Nestedフィールドをフラット構造でも検索できるようになります：
 
-## Nested型を使うケース
-
-### 向いているケース
-
-1. **商品のバリエーション管理**
-   - 例：Tシャツの色とサイズの組み合わせ
-   - `{color: "blue", size: "M"}` のような正確な組み合わせ検索が必要
-
-2. **ブログのコメント**
-   - 投稿者と内容をセットで検索したい
-   - ただし更新頻度が低い場合
-
-3. **イベントの参加者リスト**
-   - 参加者の属性を組み合わせて検索
-
-### 向いていないケース
-
-1. **頻繁に更新されるデータ**
-   - Nestedオブジェクトを1つ更新するだけで、文書全体を再インデックスする必要があります
-   - 例：リアルタイムのコメント欄
-
-2. **大量のオブジェクトを含む配列**
-   - それぞれが独立した文書として保存されるため、インデックスサイズが膨張します
-
-3. **Kibanaでの分析が必要な場合**
-   - Discoverでは検索できますが、LensやVisualizationでは使えません
-
-## パフォーマンスへの影響
-
-Nested型は便利ですが、タダではありません
-
-### インデックスサイズの増加
-
-Nested型では、各Nestedオブジェクトが内部的に独立した文書として保存されるため、インデックスサイズも何倍も大きくなります。
-
-:::message
-以下の計算式は概念を理解するための簡略化されたモデルです。実際のディスク使用量は、圧縮、最適化、フィールドの内容、インデックス設定など多くの要因によって変動します。
-:::
-
-```
-総インデックスサイズ ≈ 親文書のサイズ × (1 + Σ(各フィールドのNested数))
-```
-例
-- 親文書サイズ: 1KB
-- NestedフィールドA: 平均10個のオブジェクト
-- NestedフィールドB: 平均5個のオブジェクト
-
-$$
-\text{総サイズ} \approx 1\text{KB} \times (1 + 10 + 5) = 16\text{KB}
-$$
-
-つまり、上記の場合はNestを使うことで元の16倍のストレージが必要になります
-
-### 更新コストの計算
-
-```
-更新コスト = 親文書の再インデックス + (Nested数 × Nested再インデックスコスト)
+```json
+PUT /project-index
+{
+  "mappings": {
+    "properties": {
+      "members": {
+        "type": "nested",
+        "include_in_parent": true,
+        "properties": {
+          "name": { "type": "text" },
+          "role": { "type": "text" }
+        }
+      }
+    }
+  }
+}
 ```
 
-1000個のNestedオブジェクトを持つ文書の場合、1つのNestedオブジェクトの更新でも、$1 + 1000 = 1001$ 個の文書（親 + 1000個のNested）すべてが再インデックスされます
+これにより、シンプルな検索には通常のクエリを使い、厳密な検索にはNestedクエリを使うという使い分けが可能になります。
 
-:::message
-実際の更新パフォーマンスは、ハードウェア、クラスタ構成、書き込み負荷、マージポリシーなど多くの要因に依存します。
-:::
+### フィルタリングを併用
 
-### その他のパフォーマンスへの影響
-
-- クエリ速度が通常のフィールドより遅い（**ただしjoin型よりは5-10倍速い**）
-
-
-## ベストプラクティス
-
-### Nested検索時にフィルタリングを行う
-
-Nested検索は重いので、まず通常のフィルタで文書を絞り込んでから実行しましょう
+Nested検索は高コストなので、まず通常のフィルタで文書を絞り込んでから実行しましょう：
 
 ```json
 {
   "query": {
     "bool": {
       "filter": [
-        { "term": { "project": "projectA" } }  // まずこれで絞る
+        { "term": { "project": "Web開発プロジェクト" } }  // まずプロジェクトで絞る
       ],
       "must": [
         {
           "nested": {
-            "path": "users",
-            "query": { ... }
+            "path": "members",
+            "query": {
+              "match": { "members.role": "エンジニア" }
+            }
           }
         }
       ]
@@ -327,30 +284,64 @@ Nested検索は重いので、まず通常のフィルタで文書を絞り込�
 }
 ```
 
-### include_in_parentを活用
-`include_in_parent`は検索の柔軟性とパフォーマンスの両立を図るオプションです。
+## フラット構造とNested型の比較検討
 
-このオプションを有効にすると、 Nested、object配列の両方の型としてインデックスされます。
+### Nested型が向いているケース
 
-これにより、Nestedクエリを使わずに通常のフィールドとして検索することも可能になります。
+1. **プロジェクトメンバー管理**
+   - メンバーの名前と役職を組み合わせて検索
+   - 例：「田中さんがエンジニアとして参加しているプロジェクト」
 
-```json
-{
-  "mappings": {
-    "properties": {
-      "users": {
-        "type": "nested",
-        "include_in_parent": true
-      }
-    }
-  }
-}
-```
+2. **商品のバリエーション管理**
+   - 色とサイズの正確な組み合わせ検索が必要
+   - 例：`{color: "青", size: "M"}` の在庫確認
+
+3. **更新頻度が低いデータ**
+   - 一度登録したらあまり変更しないデータ
+   - 例：過去のイベント参加者リスト
+
+### フラット構造（通常のobject型）が向いているケース
+
+1. **頻繁に更新されるデータ**
+   - リアルタイムで更新が必要なデータ
+   - 例：アクティブなチャットメッセージ
+
+2. **大量のオブジェクトを含む配列**
+   - 1つの文書に数百〜数千のオブジェクトがある場合
+   - インデックスサイズの増大を避けたい場合
+
+3. **Kibanaでの分析が必要な場合**
+   - ダッシュボードやビジュアライゼーションを作成したい場合
+   - Nested型はKibanaのLensで使用できない
+
+### 性能比較
+
+| 観点 | フラット構造 | Nested型 |
+|------|------------|----------|
+| インデックスサイズ | 小 | 大（オブジェクト数に比例） |
+| 更新性能 | 高速 | 低速（文書全体の再インデックス） |
+| クエリ精度 | 低（誤検出あり） | 高（正確な検索） |
+| クエリ速度 | 高速 | 低速 |
+| Kibanaサポート | 完全対応 | 部分対応（Discoverのみ） |
 
 ## まとめ
 
-Nested型は、Elasticsearchでオブジェクト配列の関係性を保持する強力なツールです。ただし、銀の弾丸ではありません。
+Nested型は、Elasticsearchでオブジェクト配列の関係性を保持する強力なツールです。プロジェクトメンバーの管理のように、オブジェクト内のフィールドの関連性を維持する必要がある場合には非常に有効です。
 
-更新頻度、データ量、パフォーマンス要件を総合的に判断して、本当にNested型が必要かを検討しましょう。多くの場合、データモデルを見直して非正規化する方が、シンプルで高速な解決策になることもあります。
+しかし、公式ドキュメントが警告するように「Nested文書とクエリは通常高コスト」であることを忘れてはいけません。
 
-実際のプロジェクトでNested型を採用する前に、小規模なデータでパフォーマンステストを実施することをお勧めします。思わぬボトルネックに後から気づくより、最初から適切な選択をする方が、長期的には楽になるはずです。
+導入前のチェックリスト：
+- [ ] 本当にオブジェクトの独立性が必要か？
+- [ ] 更新頻度は低いか？
+- [ ] オブジェクト数は適切か？（数個〜数十個程度）
+- [ ] Kibanaでの分析は不要か？
+- [ ] パフォーマンステストは実施したか？
+
+多くの場合、データモデルを見直して非正規化する方が、シンプルで高速な解決策になることもあります。Nested型は強力ですが、適切な場面で使ってこそ真価を発揮します。
+
+## 参考リンク
+
+- [Nested field type | Elasticsearch公式ドキュメント](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)
+- [Nested query | Elasticsearch公式ドキュメント](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-nested-query.html)
+- [Retrieve inner hits | Elasticsearch公式ドキュメント](https://www.elastic.co/guide/en/elasticsearch/reference/current/inner-hits.html)
+- [Arrays | Elasticsearch公式ドキュメント](https://www.elastic.co/guide/en/elasticsearch/reference/current/array.html)
