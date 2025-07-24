@@ -76,15 +76,51 @@ Elasticsearchを使っていると、オブジェクト配列の検索で思わ�
 
 ### Nested型とは
 
-[Nested型](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)は、オブジェクト配列の各要素の独立性を保つための特殊なデータ型です。
+[Nested型](https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html)は、オブジェクト配列の各要素を独立した文書として保存する特殊なデータ型です。
 
 ### Nested型の仕組み
 
-Nested型を使うと、配列内の各オブジェクトが独立した「隠れた文書」として保存されます。公式ドキュメントによると：
+通常の平坦化では、こうなってしまいました：
+
+```json
+// 平坦化（問題あり）
+{
+  "project": "AI開発プロジェクト",
+  "members.name": ["田中", "佐藤"],
+  "members.role": ["リーダー", "エンジニア"]
+}
+```
+
+Nested型を使うと、Elasticsearchは内部的に**複数の独立した文書**として保存します：
+
+```
+// 親文書
+{
+  "project": "AI開発プロジェクト"
+}
+
+// 隠れた子文書1
+{
+  "_parent": "AI開発プロジェクト",
+  "members.name": "田中",
+  "members.role": "リーダー"
+}
+
+// 隠れた子文書2
+{
+  "_parent": "AI開発プロジェクト",
+  "members.name": "佐藤",
+  "members.role": "エンジニア"
+}
+```
+
+つまり、1つのプロジェクト文書が実際には3つの文書（親1個 + メンバー2個）として保存されるのです。
+
+公式ドキュメントの説明：
 
 > 各Nestedオブジェクトは独立したLucene文書としてインデックスされます。100個のユーザーオブジェクトを含む1つの文書をインデックスすると、101個のLucene文書が作成されます：親文書1個とNestedオブジェクト100個です。
 
-これらの文書は同じLuceneセグメント内に物理的に隣接して配置されるため、効率的にクエリを実行できます。
+これにより、「田中」と「リーダー」、「佐藤」と「エンジニア」の関係性が保たれます。
 
 ### 使い方
 
