@@ -3,7 +3,7 @@ title: "ElasticsearchのNested型って何？"
 emoji: "🔍"
 type: "tech"
 topics: ["Elasticsearch", "Lucene", "データモデリング", "検索エンジン", "パフォーマンス"]
-published: false
+published: true
 publication_name: "nextbeat"
 ---
 
