@@ -3,7 +3,7 @@ title: "AIに「雑に頼める」のは、判断基準を先に渡している�
 emoji: "🧭"
 type: "idea"
 topics: ["claudecode", "aiエージェント", "生成ai", "ai", "仕事術"]
-published: false
+published: true
 publication_name: "nextbeat"
 ---
 
